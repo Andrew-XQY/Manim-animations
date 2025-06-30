@@ -6,7 +6,7 @@ import random
 # === CONFIGURATION ===
 config = {
     "scene": {
-        "wait_time": 6,
+        "wait_time": 8,
         # vertical separation between interactive walls
         "wall_spacing": 1.0,
         # small gap between interactive and non-interactable walls
@@ -16,7 +16,7 @@ config = {
         "start": LEFT * 3.5,
         "end": RIGHT * 3.5,
         "color": BLUE,
-        "max_acceptance_angle_deg": 30,
+        "max_acceptance_angle_deg": 90-30, # the accaptance angle is 30 with respect to surface norm
         "refractive_index_up": 1.0,
         "refractive_index_down": 1.333,
         "immutable_steps": 10,
@@ -41,11 +41,11 @@ config = {
         "end": LEFT * 4 + UP * 0.4,
         "tilt_angle_deg": 180,
         "emission_cone_deg": 100,
-        "count": 20,
+        "count": 30,
         "distance": 0.02,
         "ray_length": 1,
         "speed": 3,
-        "radius": 0.03,
+        "radius": 0.01,
         "color": GREEN,
     },
     "receiver": {
