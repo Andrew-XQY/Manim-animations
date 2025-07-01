@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from manim import *
 import numpy as np
 import random
+import os
+import glob
 
 # === CONFIGURATION ===
 config = {
@@ -10,11 +12,12 @@ config = {
         # vertical separation between interactive walls
         "wall_spacing": 1.0,
         # small gap between interactive and non-interactable walls
-        "non_wall_gap": 0.1
+        "non_wall_gap": 0.1,
+        "walls_appear_time": 2.0,  # Time for walls and other elements to appear
     },
     "wall": {
-        "start": LEFT * 3.5,
-        "end": RIGHT * 3.5,
+        "start": LEFT * 3.6,
+        "end": RIGHT * 3.6,
         "color": BLUE,
         "max_acceptance_angle_deg": 90-30, # the accaptance angle is 30 with respect to surface norm
         "refractive_index_up": 1.0,
@@ -28,7 +31,7 @@ config = {
         "stroke_width": 4,
     },
     "cavity": {
-        "radius": 0.05,
+        "radius": 0.03,
         "color": RED,
         # maximum vertical jitter within walls
         "vertical_jitter": 0.2,
@@ -37,13 +40,13 @@ config = {
         "type": "screen",
         "mode": "ray",
         # just smaller than wall_spacing (1.0 → 0.9 total length)
-        "start": LEFT * 4 + DOWN * 0.4,
-        "end": LEFT * 4 + UP * 0.4,
+        "start": LEFT * 4 + DOWN * 0.2,
+        "end": LEFT * 4 + UP * 0.2,
         "tilt_angle_deg": 180,
         "emission_cone_deg": 100,
         "count": 30,
-        "distance": 0.02,
-        "ray_length": 1,
+        "distance": 0.006,
+        "ray_length": 0.3,
         "speed": 3,
         "radius": 0.01,
         "color": GREEN,
@@ -104,15 +107,110 @@ class Receiver(Interactable):
         self._scene = None
 
     def check_collision(self, particle) -> bool:
-        p = particle.mob.get_center()
+        p_current = particle.mob.get_center()
+        
+        # Check current position collision (existing method)
         v_line = self.end - self.start
         L = np.linalg.norm(v_line)
-        v_to_p = p - self.point_on_line
-        proj = np.dot(v_to_p, v_line) / L
-        if proj < 0 or proj > L:
+        
+        # Handle degenerate case
+        if L == 0:
             return False
-        dist = abs(np.dot(v_to_p, self.normal))
-        return dist <= particle.radius
+            
+        v_line_unit = v_line / L
+        v_to_p = p_current - self.start
+        
+        # Project particle position onto the line
+        proj_length = np.dot(v_to_p, v_line_unit)
+        
+        # Check if projection is within the line segment
+        if 0 <= proj_length <= L:
+            # Calculate closest point on line segment
+            closest_point = self.start + proj_length * v_line_unit
+            # Calculate distance from particle to closest point
+            dist = np.linalg.norm(p_current - closest_point)
+            if dist <= particle.radius:
+                return True
+        
+        # Additional check: trajectory intersection to prevent tunneling
+        # Calculate where the particle was in the previous frame
+        p_previous = p_current - particle.velocity * (1/60)  # Assuming 60 FPS
+        
+        # Check if the particle's path (line segment) intersects with the receiver line
+        return self._line_segment_intersects(p_previous, p_current, particle.radius)
+    
+    def _line_segment_intersects(self, p1, p2, radius):
+        """Check if a line segment from p1 to p2 (with radius) intersects with the receiver line"""
+        # Vector from receiver start to end
+        r_vec = self.end - self.start
+        r_len = np.linalg.norm(r_vec)
+        
+        if r_len == 0:
+            return False
+            
+        # Vector from p1 to p2 (particle trajectory)
+        p_vec = p2 - p1
+        p_len = np.linalg.norm(p_vec)
+        
+        if p_len == 0:
+            return False
+        
+        # Check if the two line segments intersect using parametric form
+        # Receiver line: r_start + t * r_vec, where 0 <= t <= 1
+        # Particle line: p1 + s * p_vec, where 0 <= s <= 1
+        
+        # Solve: r_start + t * r_vec = p1 + s * p_vec
+        # Rearrange: t * r_vec - s * p_vec = p1 - r_start
+        
+        d = p1 - self.start
+        det = r_vec[0] * p_vec[1] - r_vec[1] * p_vec[0]
+        
+        # Lines are parallel
+        if abs(det) < 1e-10:
+            # Check if particle path passes close to receiver line
+            return self._distance_point_to_line_segment(p1, radius) <= radius or \
+                   self._distance_point_to_line_segment(p2, radius) <= radius
+        
+        # Calculate intersection parameters
+        t = (d[0] * p_vec[1] - d[1] * p_vec[0]) / det
+        s = (d[0] * r_vec[1] - d[1] * r_vec[0]) / det
+        
+        # Check if intersection occurs within both line segments
+        if 0 <= t <= 1 and 0 <= s <= 1:
+            return True
+            
+        # Additional check: minimum distance between line segments
+        return self._min_distance_between_segments(p1, p2, radius) <= radius
+    
+    def _distance_point_to_line_segment(self, point, radius):
+        """Calculate minimum distance from a point to the receiver line segment"""
+        v_line = self.end - self.start
+        L = np.linalg.norm(v_line)
+        
+        if L == 0:
+            return np.linalg.norm(point - self.start)
+            
+        v_line_unit = v_line / L
+        v_to_p = point - self.start
+        proj_length = np.dot(v_to_p, v_line_unit)
+        
+        if proj_length < 0:
+            return np.linalg.norm(point - self.start)
+        elif proj_length > L:
+            return np.linalg.norm(point - self.end)
+        else:
+            closest_point = self.start + proj_length * v_line_unit
+            return np.linalg.norm(point - closest_point)
+    
+    def _min_distance_between_segments(self, p1, p2, radius):
+        """Calculate minimum distance between particle trajectory and receiver line"""
+        # This is a simplified version - check endpoints and middle points
+        distances = [
+            self._distance_point_to_line_segment(p1, radius),
+            self._distance_point_to_line_segment(p2, radius),
+            self._distance_point_to_line_segment((p1 + p2) / 2, radius)
+        ]
+        return min(distances)
 
     def interact(self, particle):
         # stop motion
@@ -357,8 +455,13 @@ class ScreenSource(ParticleGenerator):
             mobj.remove_updater(self._release_next)
 
 # === SCENE ===
-class GeneralSimulation(Scene):
+class Action(Scene):
     def construct(self):
+        # Set up all the simulation elements (walls, cavities, etc.)
+        self.setup_simulation_elements()
+    
+    def setup_simulation_elements(self):
+        """Set up all the simulation elements (walls, cavities, etc.)"""
         w = config["wall"]
         spacing = config["scene"]["wall_spacing"]
         gap = config["scene"]["non_wall_gap"]
@@ -375,17 +478,15 @@ class GeneralSimulation(Scene):
             refractive_index_down=w["refractive_index_down"],
             immutable_steps=w["immutable_steps"],
         )
-        wall_top.add_to_scene(self)
         wall_bottom = Wall(
             start=w["start"] + bottom_offset,
             end=w["end"] + bottom_offset,
             color=w["color"],
             max_acceptance_angle_deg=w["max_acceptance_angle_deg"],
-            refractive_index_up=w["refractive_index_up"],
-            refractive_index_down=w["refractive_index_down"],
+            refractive_index_up=w["refractive_index_down"],  # Reversed for bottom wall
+            refractive_index_down=w["refractive_index_up"],  # Reversed for bottom wall
             immutable_steps=w["immutable_steps"],
         )
-        wall_bottom.add_to_scene(self)
 
         # Non-interactable horizontal walls (just outside)
         niw_conf = config["non_interactable_wall"]
@@ -394,40 +495,28 @@ class GeneralSimulation(Scene):
             end=w["end"] + UP * (spacing / 2 + gap),
             color=niw_conf["color"], stroke_width=niw_conf["stroke_width"]
         )
-        non_top.add_to_scene(self)
         non_top.mob.set_opacity(niw_conf["opacity"])
         non_bottom = NonInteractableWall(
             start=w["start"] + DOWN * (spacing / 2 + gap),
             end=w["end"] + DOWN * (spacing / 2 + gap),
             color=niw_conf["color"], stroke_width=niw_conf["stroke_width"]
         )
-        non_bottom.add_to_scene(self)
         non_bottom.mob.set_opacity(niw_conf["opacity"])
 
         # Non-interactable vertical walls (connect horizontals)
         left_x = w["start"][0]
         right_x = w["end"][0]
-        y_top = spacing / 2 + gap
-        y_bottom = -spacing / 2 - gap
-        left_vert = NonInteractableWall(
-            start=LEFT * abs(left_x) + DOWN * y_top * 0 + UP * 0,  # placeholder
-            end=LEFT * abs(left_x) + DOWN * y_top * 0 + UP * 0,    # placeholder
-            color=niw_conf["color"], stroke_width=niw_conf["stroke_width"]
-        )
-        # Actually define using points:
         left_vert = NonInteractableWall(
             start=LEFT * abs(left_x) + DOWN * (spacing / 2 + gap),
             end=LEFT * abs(left_x) + UP * (spacing / 2 + gap),
             color=niw_conf["color"], stroke_width=niw_conf["stroke_width"]
         )
-        left_vert.add_to_scene(self)
         left_vert.mob.set_opacity(niw_conf["opacity"])
         right_vert = NonInteractableWall(
             start=RIGHT * abs(right_x) + DOWN * (spacing / 2 + gap),
             end=RIGHT * abs(right_x) + UP * (spacing / 2 + gap),
             color=niw_conf["color"], stroke_width=niw_conf["stroke_width"]
         )
-        right_vert.add_to_scene(self)
         right_vert.mob.set_opacity(niw_conf["opacity"])
 
         # Cavities (three, varying radii and slight vertical variation)
@@ -439,9 +528,8 @@ class GeneralSimulation(Scene):
             dy = random.uniform(-c_conf["vertical_jitter"], c_conf["vertical_jitter"])
             # ensure cavities remain within interactive walls
             y = np.clip(dy, -spacing/2 + r, spacing/2 - r)
-            cav_shape = Circle(radius=r, color=c_conf["color"]) .move_to([x, y, 0])
+            cav_shape = Circle(radius=r, color=c_conf["color"]).move_to([x, y, 0])
             cav = Cavity(cav_shape)
-            cav.add_to_scene(self)
             cavities.append(cav)
 
         # Receiver at right
@@ -452,7 +540,6 @@ class GeneralSimulation(Scene):
             tilt_angle_deg=r_conf["tilt_angle_deg"],
             color=r_conf["color"], stroke_width=r_conf["stroke_width"]
         )
-        receiver.add_to_scene(self)
 
         # Source on the left
         s = config["source"]
@@ -462,7 +549,73 @@ class GeneralSimulation(Scene):
             distance=s["distance"], ray_length=s["ray_length"], speed=s["speed"],
             radius=s["radius"], color=s["color"], interactables=[wall_top, wall_bottom] + cavities + [receiver]
         )
+        
+        # Text labels
+        # Input text (near the screen source, matching its color, vertically centered with walls)
+        input_text = Text("Input", font_size=24, color=s["color"])
+        input_text.move_to(LEFT * 4.8 + UP * 0)  # Centered vertically between walls
+        
+        # Output text (near the receiver, matching its color, vertically centered with walls)  
+        output_text = Text("Output", font_size=24, color=r_conf["color"])
+        output_text.move_to(RIGHT * 4.82 + UP * 0)  # Centered vertically between walls, same spacing as Input
+        
+        # Multimode fiber text (under bottom wall center, matching wall color, with more spacing)
+        fiber_text = Text("Multimode fiber", font_size=22, color=w["color"])
+        bottom_wall_center = (w["start"] + w["end"]) / 2 + bottom_offset
+        fiber_text.move_to(bottom_wall_center + DOWN * 0.6)  # Increased spacing from 0.4 to 0.6
+        
+        # Add elements to scene
+        wall_top.add_to_scene(self)
+        wall_bottom.add_to_scene(self)
+        non_top.add_to_scene(self)
+        non_bottom.add_to_scene(self)
+        left_vert.add_to_scene(self)
+        right_vert.add_to_scene(self)
+        for cav in cavities:
+            cav.add_to_scene(self)
+        receiver.add_to_scene(self)
         generator.add_to_scene(self)
+        
+        # Collect elements that will appear gradually (excluding the screen source)
+        gradual_elements = [
+            wall_top.line, wall_bottom.line,
+            non_top.mob, non_bottom.mob, left_vert.mob, right_vert.mob,
+            *[cav.shape for cav in cavities],
+            receiver.line,
+            input_text, output_text, fiber_text  # Add text labels
+        ]
+        
+        # Start with gradual elements invisible (screen source stays visible)
+        for element in gradual_elements:
+            element.set_opacity(0)
+        
+        # Animate gradual elements appearing (screen source already visible)
+        self.play(
+            *[element.animate.set_opacity(1) for element in gradual_elements],
+            run_time=config["scene"]["walls_appear_time"],
+            rate_func=smooth
+        )
+        
+        # Start particle generation
         generator.generate(self)
 
         self.wait(config["scene"]["wait_time"])
+        
+        # At the end, fade out everything except the receiver
+        fade_out_elements = [
+            wall_top.line, wall_bottom.line,
+            non_top.mob, non_bottom.mob, left_vert.mob, right_vert.mob,
+            *[cav.shape for cav in cavities],
+            generator.line_mob,
+            input_text, output_text, fiber_text  # Add text labels to fade out
+        ]
+        
+        # Fade out all elements except receiver
+        self.play(
+            *[element.animate.set_opacity(0) for element in fade_out_elements],
+            run_time=2.0,
+            rate_func=smooth
+        )
+        
+        # Final pause with only receiver visible
+        self.wait(1.0)
