@@ -1,4 +1,4 @@
-# My Manim Project
+# Multimode fiber remote imaging reconstruction
 
 This Manim animation demonstrates the core concept of my PhD project. Here's the video:
 
